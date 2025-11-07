@@ -3962,7 +3962,9 @@
         let csvData = {
             headers: [],
             rows: [],
-            raw: null
+            raw: null,
+            fullDataLoaded: false, 
+            isPreviewMode: false
         };
 
        let dashboardSettings = {
@@ -4527,10 +4529,104 @@
             } else if (step === 'summary') {
                 updateSummaryStats();
             } else if (step === 'dashboard') {
-                renderDashboard();
+                // FIX: Parse full data if needed
+                if (csvData.isPreviewMode && !csvData.fullDataLoaded) {
+                    parseFullCSVData();
+                } else {
+                    renderDashboard();
+                }
             }
             
             console.log('=== switchToStep END ===');
+        }
+
+        function parseFullCSVData() {
+            if (!csvData.raw) {
+                showModal('⚠️', 'Error', 'No CSV file loaded!');
+                return;
+            }
+            
+            const fileSize = csvData.raw.size / (1024 * 1024);  // MB
+            
+            showLoading(`Loading full data (${fileSize.toFixed(2)} MB)...`);
+            
+            // Parse with chunks for large files
+            if (fileSize > 100) {
+                parseFullWithChunks(csvData.raw);
+            } else {
+                parseFullNormal(csvData.raw);
+            }
+        }
+        
+        function parseFullNormal(file) {
+            Papa.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                encoding: 'UTF-8',
+                complete: function(results) {
+                    if (results.errors.length > 0) {
+                        Papa.parse(file, {
+                            header: true,
+                            skipEmptyLines: true,
+                            encoding: 'UTF-16',
+                            complete: function(results2) {
+                                handleFullDataParsed(results2);
+                            }
+                        });
+                    } else {
+                        handleFullDataParsed(results);
+                    }
+                },
+                error: function(err) {
+                    hideLoading();
+                    showModal('❌', 'Error', 'Failed to parse full data: ' + err.message);
+                }
+            });
+        }
+        
+        function parseFullWithChunks(file) {
+            let allRows = [];
+            let headers = null;
+            let rowCount = 0;
+            
+            Papa.parse(file, {
+                header: true,
+                skipEmptyLines: true,
+                chunk: function(results, parser) {
+                    if (!headers) {
+                        headers = results.meta.fields;
+                    }
+                    
+                    allRows = allRows.concat(results.data);
+                    rowCount += results.data.length;
+                    
+                    const progress = Math.min((results.meta.cursor / file.size) * 100, 99);
+                    updateLoadingText(`Loading... ${progress.toFixed(0)}% (${rowCount.toLocaleString()} rows)`);
+                },
+                complete: function(results) {
+                    handleFullDataParsed({
+                        data: allRows,
+                        meta: { fields: headers }
+                    });
+                }
+            });
+        }
+        
+        function handleFullDataParsed(results) {
+            csvData.rows = results.data;
+            csvData.headers = results.meta.fields;
+            csvData.fullDataLoaded = true;
+            
+            hideLoading();
+            
+            const rowCount = csvData.rows.length;
+            
+            showModal('✅', 'Full Data Loaded', 
+                `Successfully loaded ${rowCount.toLocaleString()} rows!\n\nGenerating dashboard...`,
+                function() {
+                    renderDashboard();
+                }
+            );
         }
 
        function loadCreativeConfigToForm() {
@@ -4944,6 +5040,8 @@ setTimeout(() => {
             csvData.headers = results.meta.fields;
             csvData.rows = results.data;
             csvData.raw = file;
+            csvData.fullDataLoaded = false;
+            csvData.isPreviewMode = true;
             
             // FIX: Show warning if file is large
             const fileSize = (file.size / (1024 * 1024)).toFixed(2);  // MB
